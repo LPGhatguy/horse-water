@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+glam = { version = "0.34.1", features = ["bytemuck"] }
 hecs = "0.11.2"
 notify = "8.2.1"
 sdl3 = { version = "0.20.0", features = ["build-from-source", "raw-window-handle"] }

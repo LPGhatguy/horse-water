@@ -45,8 +45,6 @@ impl Shaders {
 
         let child = command.spawn().context("failed to run the 'dxc' command")?;
 
-        let id = child.id().unwrap_or(0);
-
         let output = child.wait_with_output().await?;
 
         let stderr = String::from_utf8_lossy(&output.stderr);
