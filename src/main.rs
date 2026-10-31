@@ -221,6 +221,17 @@ async fn go() -> anyhow::Result<()> {
         }],
     });
 
+    let indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("indirect"),
+        contents: bytemuck::bytes_of(&[wgpu::util::DrawIndirectArgs {
+            vertex_count: 3,
+            instance_count: 1,
+            first_vertex: 0,
+            first_instance: 0,
+        }]),
+        usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+    });
+
     let mut event_pump = sdl.event_pump()?;
 
     'outer: loop {
@@ -281,7 +292,7 @@ async fn go() -> anyhow::Result<()> {
 
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.draw(0..3, 0..1);
+            pass.draw_indirect(&indirect_buffer, 0);
         }
 
         queue.submit([encoder.finish()]);
