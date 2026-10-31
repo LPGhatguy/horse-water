@@ -463,6 +463,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "horse-water"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "glam",
+ "gltf",
+ "hecs",
+ "notify",
+ "sdl3",
+ "tempfile",
+ "tokio",
+ "wgpu",
+]
+
+[[package]]
 name = "image"
 version = "0.25.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1406,22 +1422,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
-]
-
-[[package]]
-name = "try-mdi"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "gltf",
- "hecs",
- "notify",
- "sdl3",
- "tempfile",
- "tokio",
- "wgpu",
 ]
 
 [[package]]
