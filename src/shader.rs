@@ -4,7 +4,11 @@ use std::ptr;
 use anyhow::{Context, bail};
 use tokio::process::Command;
 
-pub struct Shaders {}
+use crate::SHADER_DEBUGGING;
+
+pub struct Shaders {
+    // a cache someday probably
+}
 
 impl Shaders {
     pub fn new() -> Self {
@@ -33,9 +37,9 @@ impl Shaders {
 
         command.arg("-Fo").arg(&output_path);
 
-        // if emit_debug_info {
-        //     command.args(["-Zi", "-fspv-debug=vulkan-with-source"]);
-        // }
+        if SHADER_DEBUGGING {
+            command.args(["-Zi", "-fspv-debug=vulkan-with-source"]);
+        }
 
         command
             .kill_on_drop(true)

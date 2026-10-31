@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::num::NonZeroU64;
+use std::time::Instant;
 
 use anyhow::Context;
 use bytemuck::{Pod, Zeroable};
@@ -12,6 +13,8 @@ use wgpu::util::DeviceExt;
 use self::asset::Model;
 use self::shader::Shaders;
 
+const SHADER_DEBUGGING: bool = true;
+
 mod asset;
 mod shader;
 
@@ -23,16 +26,11 @@ const MB: u64 = 1024 * KB;
 struct Vertex {
     pos: Vec3,
     normal: Vec3,
-    _pad0: [f32; 2],
 }
 
 impl Vertex {
     fn new(pos: Vec3, normal: Vec3) -> Self {
-        Self {
-            pos,
-            normal,
-            _pad0: [f32::MIN, f32::MAX],
-        }
+        Self { pos, normal }
     }
 }
 
@@ -46,6 +44,25 @@ struct GpuModelNode {
 #[repr(C)]
 struct GpuPerView {
     world_to_ndc: Mat4,
+    camera_in_world: Vec3,
+    _pad0: f32,
+}
+
+fn per_view(t: f32) -> GpuPerView {
+    let camera_in_world = Vec3::new(t.cos() * 1.5, 0.3, t.sin() * 1.5);
+
+    let camera_from_world =
+        glam::camera::rh::view::look_at_mat4(camera_in_world, Vec3::ZERO, Vec3::Y);
+    let ndc_from_camera =
+        glam::camera::rh::proj::directx::perspective_infinite_reverse(90.0, 800.0 / 600.0, 0.01);
+
+    let world_to_ndc = ndc_from_camera * camera_from_world;
+
+    GpuPerView {
+        world_to_ndc,
+        camera_in_world,
+        _pad0: f32::MAX,
+    }
 }
 
 async fn go() -> anyhow::Result<()> {
@@ -90,7 +107,8 @@ async fn go() -> anyhow::Result<()> {
         | wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY
         | wgpu::Features::FLOAT32_FILTERABLE
         | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT
-        | wgpu::Features::INDIRECT_FIRST_INSTANCE;
+        | wgpu::Features::INDIRECT_FIRST_INSTANCE
+        | wgpu::Features::PASSTHROUGH_SHADERS;
 
     let required_limits = wgpu::Limits {
         max_sampled_textures_per_shader_stage: 32,
@@ -191,14 +209,34 @@ async fn go() -> anyhow::Result<()> {
     });
 
     let main_source = shaders.get("main").await?;
-    let module = unsafe {
-        device.create_shader_module_trusted(
-            wgpu::ShaderModuleDescriptor {
-                label: Some("main!?"),
-                source: wgpu::ShaderSource::SpirV(Cow::Owned(main_source)),
-            },
-            wgpu::ShaderRuntimeChecks::unchecked(),
-        )
+    let module = if SHADER_DEBUGGING {
+        unsafe {
+            device.create_shader_module_passthrough(wgpu::ShaderModuleDescriptorPassthrough {
+                label: Some("main"),
+                entry_points: Cow::Borrowed(&[
+                    wgpu::PassthroughShaderEntryPoint {
+                        name: "vs_main".into(),
+                        workgroup_size: (1, 1, 1),
+                    },
+                    wgpu::PassthroughShaderEntryPoint {
+                        name: "fs_main".into(),
+                        workgroup_size: (1, 1, 1),
+                    },
+                ]),
+                spirv: Some(Cow::Owned(main_source)),
+                ..Default::default()
+            })
+        }
+    } else {
+        unsafe {
+            device.create_shader_module_trusted(
+                wgpu::ShaderModuleDescriptor {
+                    label: Some("main!?"),
+                    source: wgpu::ShaderSource::SpirV(Cow::Owned(main_source)),
+                },
+                wgpu::ShaderRuntimeChecks::unchecked(),
+            )
+        }
     };
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -290,18 +328,9 @@ async fn go() -> anyhow::Result<()> {
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
-    let camera_from_world =
-        glam::camera::rh::view::look_at_mat4(Vec3::new(0.5, 0.5, 1.2), Vec3::ZERO, Vec3::Y);
-    let ndc_from_camera =
-        glam::camera::rh::proj::directx::perspective_infinite_reverse(90.0, 800.0 / 600.0, 0.01);
-
-    let world_to_ndc = ndc_from_camera * camera_from_world;
-
-    let per_view = GpuPerView { world_to_ndc };
-
     let per_view_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("per view"),
-        contents: bytemuck::bytes_of(&per_view),
+        contents: bytemuck::bytes_of(&per_view(0.0)),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
@@ -336,9 +365,8 @@ async fn go() -> anyhow::Result<()> {
         usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
     });
 
-    let mut write_count: u32 = 1;
-
     let mut event_pump = sdl.event_pump()?;
+    let start = Instant::now();
 
     'outer: loop {
         for event in event_pump.poll_iter() {
@@ -351,19 +379,13 @@ async fn go() -> anyhow::Result<()> {
                     break 'outer;
                 }
 
-                Event::KeyDown { keycode, .. } => {
-                    if keycode == Some(Keycode::W) {
-                        write_count = 1;
-                    } else if keycode == Some(Keycode::S) {
-                        write_count = 0;
-                    }
-                }
-
                 _ => {}
             }
         }
 
-        queue.write_buffer(&count_buffer, 0, bytemuck::bytes_of(&[write_count]));
+        let t = Instant::now().duration_since(start).as_secs_f32();
+
+        queue.write_buffer(&per_view_buffer, 0, bytemuck::bytes_of(&per_view(t)));
 
         let surface_texture = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(surface_texture) => surface_texture,
