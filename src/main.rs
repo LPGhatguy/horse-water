@@ -232,6 +232,14 @@ async fn go() -> anyhow::Result<()> {
         usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
     });
 
+    let count_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("indirect count"),
+        contents: bytemuck::bytes_of(&[1u32]),
+        usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+    });
+
+    let mut write_count: u32 = 1;
+
     let mut event_pump = sdl.event_pump()?;
 
     'outer: loop {
@@ -245,9 +253,19 @@ async fn go() -> anyhow::Result<()> {
                     break 'outer;
                 }
 
+                Event::KeyDown { keycode, .. } => {
+                    if keycode == Some(Keycode::W) {
+                        write_count = 1;
+                    } else if keycode == Some(Keycode::S) {
+                        write_count = 0;
+                    }
+                }
+
                 _ => {}
             }
         }
+
+        queue.write_buffer(&count_buffer, 0, bytemuck::bytes_of(&[write_count]));
 
         let surface_texture = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(surface_texture) => surface_texture,
@@ -292,7 +310,7 @@ async fn go() -> anyhow::Result<()> {
 
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.draw_indirect(&indirect_buffer, 0);
+            pass.multi_draw_indirect_count(&indirect_buffer, 0, &count_buffer, 0, 1);
         }
 
         queue.submit([encoder.finish()]);
