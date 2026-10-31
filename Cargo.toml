@@ -1,0 +1,13 @@
+[package]
+name = "try-mdi"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+hecs = "0.11.2"
+notify = "8.2.1"
+sdl3 = { version = "0.20.0", features = ["build-from-source", "raw-window-handle"] }
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "process", "fs"] }
+wgpu = { version = "30.0.1", features = ["spirv"] }
