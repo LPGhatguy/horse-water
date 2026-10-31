@@ -1,8 +1,13 @@
 struct Vertex {
-	float3 position;
+	float3 pos_in_node;
+};
+
+struct ModelNode {
+	float4x4 node_to_world;
 };
 
 [[vk::binding(0, 0)]] StructuredBuffer<Vertex> vertices;
+[[vk::binding(1, 0)]] StructuredBuffer<ModelNode> nodes;
 
 struct VertexInput {
 	uint index : SV_InstanceID;
@@ -10,7 +15,7 @@ struct VertexInput {
 };
 
 struct VertexOutput {
-	precise float4 position : SV_Position;
+	precise float4 pos_in_world : SV_Position;
 };
 
 struct FragOutput {
@@ -19,8 +24,15 @@ struct FragOutput {
 
 [shader("vertex")]
 VertexOutput vs_main(VertexInput v_in) {
+	uint node_id = v_in.index;
+	ModelNode node = nodes[node_id];
+
+	Vertex vertex = vertices[v_in.vertex];
+
+	float4 pos_in_world = mul(node.node_to_world, float4(vertex.pos_in_node, 1.0));
+
 	VertexOutput output;
-	output.position = float4(vertices[v_in.vertex].position, 1.0);
+	output.pos_in_world = pos_in_world;
 	return output;
 }
 

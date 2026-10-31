@@ -2,14 +2,16 @@ use std::borrow::Cow;
 
 use anyhow::Context;
 use bytemuck::{Pod, Zeroable};
-use glam::{UVec2, Vec3};
+use glam::{Mat4, UVec2, Vec3};
 use sdl3::event::Event;
 use sdl3::keyboard::Keycode;
 use wgpu::rwh::{HasDisplayHandle, HasWindowHandle};
 use wgpu::util::DeviceExt;
 
+use self::asset::Model;
 use self::shader::Shaders;
 
+mod asset;
 mod shader;
 
 const KB: u64 = 1024;
@@ -31,6 +33,12 @@ impl Vertex {
     }
 }
 
+#[derive(Clone, Copy, Zeroable, Pod)]
+#[repr(C)]
+struct GpuModelNode {
+    node_to_world: Mat4,
+}
+
 async fn go() -> anyhow::Result<()> {
     let sdl = sdl3::init()?;
     let video = sdl.video()?;
@@ -42,7 +50,7 @@ async fn go() -> anyhow::Result<()> {
         .unwrap();
 
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::VULKAN | wgpu::Backends::METAL | wgpu::Backends::DX12,
+        backends: wgpu::Backends::PRIMARY,
         flags: wgpu::InstanceFlags::DEBUG,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
@@ -133,16 +141,28 @@ async fn go() -> anyhow::Result<()> {
 
     let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("maaaaaiiinnn"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::all(),
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                has_dynamic_offset: false,
-                min_binding_size: None,
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::all(),
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
             },
-            count: None,
-        }],
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::all(),
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
     });
 
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -202,39 +222,79 @@ async fn go() -> anyhow::Result<()> {
         cache: None,
     });
 
+    let monkey = Model::load("monkey")?;
+
+    let mut all_the_vertices = Vec::new();
+    let mut all_the_indices = Vec::new();
+    let mut draw_calls = Vec::new();
+    let mut gpu_model_nodes = Vec::new();
+
+    for node in monkey.nodes {
+        let vertex_offset = all_the_vertices.len() as i32;
+        // let vertex_len = node.vertices.len() as u32;
+        all_the_vertices.extend_from_slice(&node.vertices);
+
+        let index_offset = all_the_indices.len() as u32;
+        let index_len = node.indices.len() as u32;
+        all_the_indices.extend_from_slice(&node.indices);
+
+        let first_instance = gpu_model_nodes.len() as u32;
+
+        draw_calls.push(wgpu::util::DrawIndexedIndirectArgs {
+            first_index: index_offset,
+            index_count: index_len,
+            base_vertex: vertex_offset,
+            first_instance,
+            instance_count: 1,
+        });
+
+        gpu_model_nodes.push(GpuModelNode {
+            node_to_world: node.node_to_model,
+        });
+    }
+
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("vertices"),
-        contents: bytemuck::bytes_of(&[
-            Vertex::new(-1.0, 1.0, 0.0),
-            Vertex::new(1.0, 1.0, 0.0),
-            Vertex::new(0.0, -1.0, 0.0),
-        ]),
+        contents: bytemuck::cast_slice(all_the_vertices.as_slice()),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+    });
+
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("indices"),
+        contents: bytemuck::cast_slice(all_the_indices.as_slice()),
+        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+    });
+
+    let model_node_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("nodes"),
+        contents: bytemuck::cast_slice(gpu_model_nodes.as_slice()),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("...brains"),
         layout: &bgl,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: vertex_buffer.as_entire_binding(),
-        }],
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: vertex_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: model_node_buffer.as_entire_binding(),
+            },
+        ],
     });
 
     let indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("indirect"),
-        contents: bytemuck::bytes_of(&[wgpu::util::DrawIndirectArgs {
-            vertex_count: 3,
-            instance_count: 1,
-            first_vertex: 0,
-            first_instance: 0,
-        }]),
+        contents: bytemuck::cast_slice(draw_calls.as_slice()),
         usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
     });
 
     let count_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("indirect count"),
-        contents: bytemuck::bytes_of(&[1u32]),
+        contents: bytemuck::bytes_of(&[draw_calls.len() as u32]),
         usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
     });
 
@@ -310,7 +370,8 @@ async fn go() -> anyhow::Result<()> {
 
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.multi_draw_indirect_count(&indirect_buffer, 0, &count_buffer, 0, 1);
+            pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.multi_draw_indexed_indirect_count(&indirect_buffer, 0, &count_buffer, 0, 1);
         }
 
         queue.submit([encoder.finish()]);
