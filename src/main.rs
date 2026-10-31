@@ -22,14 +22,16 @@ const MB: u64 = 1024 * KB;
 #[repr(C)]
 struct Vertex {
     pos: Vec3,
-    _pad0: f32,
+    normal: Vec3,
+    _pad0: [f32; 2],
 }
 
 impl Vertex {
-    fn new(x: f32, y: f32, z: f32) -> Self {
+    fn new(pos: Vec3, normal: Vec3) -> Self {
         Self {
-            pos: Vec3::new(x, y, z),
-            _pad0: f32::MAX,
+            pos,
+            normal,
+            _pad0: [f32::MIN, f32::MAX],
         }
     }
 }

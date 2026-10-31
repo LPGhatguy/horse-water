@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::path::Path;
 
 use anyhow::Context;
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 
 use crate::Vertex;
 
@@ -48,12 +48,14 @@ impl Model {
                     let reader =
                         primitive.reader(|buffer| buffers.get(buffer.index()).map(|v| &**v));
 
-                    node.vertices.extend(
-                        reader
-                            .read_positions()
-                            .unwrap()
-                            .map(|pos| Vertex::new(pos[0], pos[1], pos[2])),
-                    );
+                    let positions = reader.read_positions().unwrap();
+                    let normals = reader.read_normals().unwrap();
+
+                    let vertex_iter = positions
+                        .zip(normals)
+                        .map(|(pos, normal)| Vertex::new(Vec3::from(pos), Vec3::from(normal)));
+
+                    node.vertices.extend(vertex_iter);
 
                     let Some(indices) = reader.read_indices() else {
                         continue;

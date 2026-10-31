@@ -1,5 +1,6 @@
 struct Vertex {
 	float3 pos_in_node;
+	float3 normal_in_node;
 };
 
 struct ModelNode {
