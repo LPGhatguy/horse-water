@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::num::NonZeroU64;
 
 use anyhow::Context;
 use bytemuck::{Pod, Zeroable};
@@ -37,6 +38,12 @@ impl Vertex {
 #[repr(C)]
 struct GpuModelNode {
     node_to_world: Mat4,
+}
+
+#[derive(Clone, Copy, Zeroable, Pod)]
+#[repr(C)]
+struct GpuPerView {
+    world_to_ndc: Mat4,
 }
 
 async fn go() -> anyhow::Result<()> {
@@ -162,6 +169,16 @@ async fn go() -> anyhow::Result<()> {
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::all(),
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: NonZeroU64::new(size_of::<GpuPerView>() as u64),
+                },
+                count: None,
+            },
         ],
     });
 
@@ -213,7 +230,7 @@ async fn go() -> anyhow::Result<()> {
         depth_stencil: Some(wgpu::DepthStencilState {
             format: wgpu::TextureFormat::Depth32Float,
             depth_write_enabled: Some(true),
-            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            depth_compare: Some(wgpu::CompareFunction::Greater),
             stencil: Default::default(),
             bias: Default::default(),
         }),
@@ -271,6 +288,21 @@ async fn go() -> anyhow::Result<()> {
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
+    let camera_from_world =
+        glam::camera::rh::view::look_at_mat4(Vec3::new(0.5, 0.5, 1.2), Vec3::ZERO, Vec3::Y);
+    let ndc_from_camera =
+        glam::camera::rh::proj::directx::perspective_infinite_reverse(90.0, 800.0 / 600.0, 0.01);
+
+    let world_to_ndc = ndc_from_camera * camera_from_world;
+
+    let per_view = GpuPerView { world_to_ndc };
+
+    let per_view_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("per view"),
+        contents: bytemuck::bytes_of(&per_view),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("...brains"),
         layout: &bgl,
@@ -282,6 +314,10 @@ async fn go() -> anyhow::Result<()> {
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: model_node_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: per_view_buffer.as_entire_binding(),
             },
         ],
     });
@@ -358,7 +394,7 @@ async fn go() -> anyhow::Result<()> {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &depth_view,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        load: wgpu::LoadOp::Clear(0.0),
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
