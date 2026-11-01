@@ -16,6 +16,7 @@ use self::shader::Shaders;
 const SHADER_DEBUGGING: bool = true;
 
 mod asset;
+mod bumpfer;
 mod shader;
 
 const KB: u64 = 1024;
