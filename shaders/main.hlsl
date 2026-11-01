@@ -8,7 +8,7 @@ static const uint VERTEX_OFFSET_NORMAL = 12;
 static const uint VERTEX_STRIDE = sizeof(Vertex);
 
 struct ModelNode {
-	float4x4 node_to_world;
+	float4x4 world_from_node;
 };
 
 struct View {
@@ -44,10 +44,10 @@ VertexOutput vs_main(VertexInput v_in) {
 	vertex.pos_in_node = asfloat(vertices.Load3(v_in.vertex * VERTEX_STRIDE + VERTEX_OFFSET_POS));
 	vertex.normal_in_node = asfloat(vertices.Load3(v_in.vertex * VERTEX_STRIDE + VERTEX_OFFSET_NORMAL));
 
-	float4 pos_in_world = mul(node.node_to_world, float4(vertex.pos_in_node, 1.0));
+	float4 pos_in_world = mul(node.world_from_node, float4(vertex.pos_in_node, 1.0));
 	float4 pos_in_ndc = mul(view.world_to_ndc, pos_in_world);
 
-	float3 normal_in_world = mul(node.node_to_world, float4(vertex.normal_in_node, 0.0)).xyz;
+	float3 normal_in_world = mul(node.world_from_node, float4(vertex.normal_in_node, 0.0)).xyz;
 
 	VertexOutput output;
 	output.pos_in_ndc = pos_in_ndc;

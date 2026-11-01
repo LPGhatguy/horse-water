@@ -15,7 +15,7 @@ pub struct Model {
 pub struct ModelNode {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
-    pub node_to_model: Mat4,
+    pub model_from_node: Mat4,
 }
 
 impl Model {
@@ -41,7 +41,7 @@ impl Model {
             if let Some(mesh) = gltf_node.mesh() {
                 for primitive in mesh.primitives() {
                     let mut node = ModelNode {
-                        node_to_model: children_to_root,
+                        model_from_node: children_to_root,
                         ..Default::default()
                     };
 

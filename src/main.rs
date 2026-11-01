@@ -1,21 +1,34 @@
 use std::borrow::Cow;
+use std::f32::consts::TAU;
 use std::num::NonZeroU64;
 use std::time::Instant;
 
 use anyhow::Context;
-use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, UVec2, Vec3};
+use bytemuck::{Pod, Zeroable, bytes_of, cast_slice};
+use glam::{EulerRot, Mat4, Quat, UVec2, Vec3};
+use hecs::World;
+use rand::RngExt;
 use sdl3::event::Event;
 use sdl3::keyboard::Keycode;
 use wgpu::rwh::{HasDisplayHandle, HasWindowHandle};
 use wgpu::util::DeviceExt;
 
 use self::asset::Model;
+use self::blast_buffer::BlastBuffer;
 use self::shader::Shaders;
 
 const SHADER_DEBUGGING: bool = true;
 
+const TICK_RATE: f32 = 1.0 / 60.0;
+
+const MODELS: &[&str] = &["monkey", "text"];
+#[expect(unused)]
+const MODEL_MONKEY: usize = pos(MODELS, "monkey");
+#[expect(unused)]
+const MODEL_TEXT: usize = pos(MODELS, "text");
+
 mod asset;
+mod blast_buffer;
 mod bumpfer;
 mod shader;
 
@@ -35,10 +48,22 @@ impl Vertex {
     }
 }
 
+#[derive(Default)]
+struct ModelInfo {
+    nodes: Vec<ModelNodeInfo>,
+}
+
+struct ModelNodeInfo {
+    first_index: u32,
+    index_count: u32,
+    base_vertex: i32,
+    model_from_node: Mat4,
+}
+
 #[derive(Clone, Copy, Zeroable, Pod)]
 #[repr(C)]
 struct GpuModelNode {
-    node_to_world: Mat4,
+    world_from_node: Mat4,
 }
 
 #[derive(Clone, Copy, Zeroable, Pod)]
@@ -49,13 +74,24 @@ struct GpuPerView {
     _pad0: f32,
 }
 
-fn per_view(t: f32) -> GpuPerView {
-    let camera_in_world = Vec3::new(t.cos() * 1.5, 0.3, t.sin() * 1.5);
+// component
+struct Transform {
+    pos: Vec3,
+    rot: Quat,
+}
+
+// component
+struct ModelFromFile {
+    id: usize,
+}
+
+fn per_view(_t: f32) -> GpuPerView {
+    let camera_in_world = Vec3::new(-10.0, 2.0, -10.0);
 
     let camera_from_world =
         glam::camera::rh::view::look_at_mat4(camera_in_world, Vec3::ZERO, Vec3::Y);
     let ndc_from_camera =
-        glam::camera::rh::proj::directx::perspective_infinite_reverse(90.0, 800.0 / 600.0, 0.01);
+        glam::camera::rh::proj::directx::perspective_infinite_reverse(70.0, 800.0 / 600.0, 0.01);
 
     let world_to_ndc = ndc_from_camera * camera_from_world;
 
@@ -280,94 +316,105 @@ async fn go() -> anyhow::Result<()> {
         cache: None,
     });
 
-    let monkey = Model::load("monkey")?;
-
     let mut all_the_vertices = Vec::new();
     let mut all_the_indices = Vec::new();
     let mut draw_calls = Vec::new();
     let mut gpu_model_nodes = Vec::new();
+    let mut model_infos = Vec::new();
 
-    for node in monkey.nodes {
-        let vertex_offset = all_the_vertices.len() as i32;
-        // let vertex_len = node.vertices.len() as u32;
-        all_the_vertices.extend_from_slice(&node.vertices);
+    for model_name in MODELS {
+        let model = Model::load(model_name)?;
 
-        let index_offset = all_the_indices.len() as u32;
-        let index_len = node.indices.len() as u32;
-        all_the_indices.extend_from_slice(&node.indices);
+        let mut model_info = ModelInfo::default();
 
-        let first_instance = gpu_model_nodes.len() as u32;
+        for node in model.nodes {
+            let base_vertex = all_the_vertices.len() as i32;
+            // let vertex_len = node.vertices.len() as u32;
+            all_the_vertices.extend_from_slice(&node.vertices);
 
-        draw_calls.push(wgpu::util::DrawIndexedIndirectArgs {
-            first_index: index_offset,
-            index_count: index_len,
-            base_vertex: vertex_offset,
-            first_instance,
-            instance_count: 1,
-        });
+            let first_index = all_the_indices.len() as u32;
+            let index_count = node.indices.len() as u32;
+            all_the_indices.extend_from_slice(&node.indices);
 
-        gpu_model_nodes.push(GpuModelNode {
-            node_to_world: node.node_to_model,
-        });
+            let first_instance = gpu_model_nodes.len() as u32;
+
+            model_info.nodes.push(ModelNodeInfo {
+                first_index,
+                index_count,
+                base_vertex,
+                model_from_node: node.model_from_node,
+            });
+
+            draw_calls.push(wgpu::util::DrawIndexedIndirectArgs {
+                first_index,
+                index_count,
+                base_vertex,
+                first_instance,
+                instance_count: 1,
+            });
+
+            gpu_model_nodes.push(GpuModelNode {
+                world_from_node: node.model_from_node,
+            });
+        }
+
+        model_infos.push(model_info);
+    }
+
+    let mut rng = rand::rng();
+    let mut world = World::new();
+
+    for x in 0..16 {
+        for y in 0..16 {
+            for z in -8..8 {
+                let x = x as f32;
+                let y = y as f32;
+                let z = z as f32;
+
+                let model_id = rng.random_range(0..MODELS.len());
+
+                world.spawn((
+                    Transform {
+                        pos: Vec3::new(x * 2.5, z * 2.5, y * 2.5),
+                        rot: Quat::from_euler(EulerRot::XYZ, x / (5.0 * TAU), y / (5.0 * TAU), 0.0),
+                    },
+                    ModelFromFile { id: model_id },
+                ));
+            }
+        }
     }
 
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("vertices"),
-        contents: bytemuck::cast_slice(all_the_vertices.as_slice()),
+        contents: cast_slice(all_the_vertices.as_slice()),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
     let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("indices"),
-        contents: bytemuck::cast_slice(all_the_indices.as_slice()),
+        contents: cast_slice(all_the_indices.as_slice()),
         usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-    });
-
-    let model_node_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("nodes"),
-        contents: bytemuck::cast_slice(gpu_model_nodes.as_slice()),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
     let per_view_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("per view"),
-        contents: bytemuck::bytes_of(&per_view(0.0)),
+        contents: bytes_of(&per_view(0.0)),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("...brains"),
-        layout: &bgl,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: vertex_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: model_node_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: per_view_buffer.as_entire_binding(),
-            },
-        ],
-    });
+    let mut model_node_buffer =
+        BlastBuffer::new(device.clone(), queue.clone(), wgpu::BufferUsages::STORAGE);
 
-    let indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("indirect"),
-        contents: bytemuck::cast_slice(draw_calls.as_slice()),
-        usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
-    });
+    let mut indirect_buffer =
+        BlastBuffer::new(device.clone(), queue.clone(), wgpu::BufferUsages::INDIRECT);
 
-    let count_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("indirect count"),
-        contents: bytemuck::bytes_of(&[draw_calls.len() as u32]),
-        usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
-    });
+    let mut count_buffer =
+        BlastBuffer::new(device.clone(), queue.clone(), wgpu::BufferUsages::INDIRECT);
 
     let mut event_pump = sdl.event_pump()?;
     let start = Instant::now();
+    let mut last = start;
+    let mut accum = 0.0;
 
     'outer: loop {
         for event in event_pump.poll_iter() {
@@ -384,9 +431,69 @@ async fn go() -> anyhow::Result<()> {
             }
         }
 
-        let t = Instant::now().duration_since(start).as_secs_f32();
+        let now = Instant::now();
+        let t = now.duration_since(start).as_secs_f32();
+        accum += now.duration_since(last).as_secs_f32();
+        last = now;
 
-        queue.write_buffer(&per_view_buffer, 0, bytemuck::bytes_of(&per_view(t)));
+        while accum >= TICK_RATE {
+            accum -= TICK_RATE;
+            systems(&mut world, TICK_RATE);
+        }
+
+        let mut num_calls = 0;
+
+        let mut query = world.query::<(&Transform, &ModelFromFile)>();
+        for (world_from_model, model) in query.iter() {
+            let world_from_model =
+                Mat4::from_rotation_translation(world_from_model.rot, world_from_model.pos);
+
+            let model_info = &model_infos[model.id];
+            for node in &model_info.nodes {
+                indirect_buffer.extend(bytes_of(&wgpu::util::DrawIndexedIndirectArgs {
+                    index_count: node.index_count,
+                    instance_count: 1,
+                    first_index: node.first_index,
+                    base_vertex: node.base_vertex,
+                    first_instance: num_calls,
+                }));
+
+                let world_from_node = world_from_model * node.model_from_node;
+
+                model_node_buffer.extend(bytes_of(&GpuModelNode { world_from_node }));
+
+                num_calls += 1;
+            }
+        }
+
+        indirect_buffer.extend(cast_slice(&draw_calls));
+        let indirect_buffer = indirect_buffer.upload();
+
+        count_buffer.extend(&u32::to_ne_bytes(num_calls));
+        let count_buffer = count_buffer.upload();
+
+        let model_node_buffer = model_node_buffer.upload();
+
+        queue.write_buffer(&per_view_buffer, 0, bytes_of(&per_view(t)));
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("...brains"),
+            layout: &bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: vertex_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: model_node_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: per_view_buffer.as_entire_binding(),
+                },
+            ],
+        });
 
         let surface_texture = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(surface_texture) => surface_texture,
@@ -432,7 +539,13 @@ async fn go() -> anyhow::Result<()> {
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            pass.multi_draw_indexed_indirect_count(&indirect_buffer, 0, &count_buffer, 0, 1);
+            pass.multi_draw_indexed_indirect_count(
+                &indirect_buffer,
+                0,
+                &count_buffer,
+                0,
+                num_calls,
+            );
         }
 
         queue.submit([encoder.finish()]);
@@ -450,4 +563,25 @@ async fn main() {
         eprintln!("{err:?}");
         std::process::exit(1);
     }
+}
+
+fn systems(world: &mut World, dt: f32) {
+    let mut query = world.query::<&mut Transform>();
+
+    for transform in query.iter() {
+        let scale = transform.pos.length() / 20.0;
+        transform.rot *= Quat::from_rotation_y(dt * scale);
+    }
+}
+
+const fn pos(slice: &[&str], needle: &str) -> usize {
+    let mut i = 0;
+    while i < slice.len() {
+        if slice[i].eq_ignore_ascii_case(needle) {
+            return i;
+        }
+        i += 1;
+    }
+
+    panic!("not found");
 }
