@@ -364,8 +364,8 @@ async fn go() -> anyhow::Result<()> {
     let mut rng = rand::rng();
     let mut world = World::new();
 
-    for x in 0..16 {
-        for y in 0..16 {
+    for x in 0..64 {
+        for y in 0..64 {
             for z in -8..8 {
                 let x = x as f32;
                 let y = y as f32;
@@ -443,26 +443,30 @@ async fn go() -> anyhow::Result<()> {
 
         let mut num_calls = 0;
 
-        let mut query = world.query::<(&Transform, &ModelFromFile)>();
-        for (world_from_model, model) in query.iter() {
-            let world_from_model =
-                Mat4::from_rotation_translation(world_from_model.rot, world_from_model.pos);
+        {
+            profiling::scope!("gather draw calls");
 
-            let model_info = &model_infos[model.id];
-            for node in &model_info.nodes {
-                indirect_buffer.extend(bytes_of(&wgpu::util::DrawIndexedIndirectArgs {
-                    index_count: node.index_count,
-                    instance_count: 1,
-                    first_index: node.first_index,
-                    base_vertex: node.base_vertex,
-                    first_instance: num_calls,
-                }));
+            let mut query = world.query::<(&Transform, &ModelFromFile)>();
+            for (world_from_model, model) in query.iter() {
+                let world_from_model =
+                    Mat4::from_rotation_translation(world_from_model.rot, world_from_model.pos);
 
-                let world_from_node = world_from_model * node.model_from_node;
+                let model_info = &model_infos[model.id];
+                for node in &model_info.nodes {
+                    indirect_buffer.extend(bytes_of(&wgpu::util::DrawIndexedIndirectArgs {
+                        index_count: node.index_count,
+                        instance_count: 1,
+                        first_index: node.first_index,
+                        base_vertex: node.base_vertex,
+                        first_instance: num_calls,
+                    }));
 
-                model_node_buffer.extend(bytes_of(&GpuModelNode { world_from_node }));
+                    let world_from_node = world_from_model * node.model_from_node;
 
-                num_calls += 1;
+                    model_node_buffer.extend(bytes_of(&GpuModelNode { world_from_node }));
+
+                    num_calls += 1;
+                }
             }
         }
 
@@ -550,6 +554,7 @@ async fn go() -> anyhow::Result<()> {
 
         queue.submit([encoder.finish()]);
         queue.present(surface_texture);
+        profiling::finish_frame!();
 
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -565,6 +570,7 @@ async fn main() {
     }
 }
 
+#[profiling::function]
 fn systems(world: &mut World, dt: f32) {
     let mut query = world.query::<&mut Transform>();
 
